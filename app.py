@@ -4,6 +4,8 @@ from flask_migrate import Migrate
 from flask_restful import Api, Resource
 from werkzeug.exceptions import NotFound
 from models import db, User, GameEntry, GameGenre, Genre, GameReview
+from flask_session import Session
+from datetime import timedelta
 
 import os
 from dotenv import load_dotenv
@@ -15,20 +17,31 @@ app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY')
 app.config['SQLALCHEMY_DATABASE_URI']= os.environ.get('DATABASE_URI')
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 app.config['JSONIFY_PRETTYPRINT_REGULAR']= True
+app.config["SESSION_TYPE"] = "filesystem"
+app.config["PERMANENT_SESSION_LIFETIME"] = timedelta(days=1)
+app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
+app.config["SESSION_FILE_DIR"] = "session_dir"
 
-CORS(app)
+CORS(app=app, supports_credentials=True)
 
 migrate = Migrate(app, db)
 api = Api(app)
+Session(app=app)
 
 db.init_app(app)
 
 @app.before_request
 def check_if_logged_in():
-    allowed_endpoints=['signup', 'login', 'games']
-    if not session.get('person_id') and request.endpoint not in allowed_endpoints:
-            return {"error":"first login"}
+    allowed_endpoints=['signup', 'login', 'games', 'index']
+    if not session.get('user_id') and request.endpoint not in allowed_endpoints:
+            return {"error":"user not authenticated"}, 401
+    
+class Index(Resource):
+    def get(self):
+        response = make_response(jsonify("Welcome to Game Haven"), 200)
+        return response
 
+api.add_resource(Index, '/', endpoint="index")
 
 class Users(Resource):
     def get(self):
@@ -72,12 +85,13 @@ class Signup(Resource):
            user = User(
                username=username,
                email=email
-           ) 
+           )
 
            user.password_hash = password
 
            db.session.add(user)
            db.session.commit()
+           session["user_id"] = user.id
 
            response = make_response(jsonify(user.to_dict()), 201)
 
@@ -86,22 +100,6 @@ class Signup(Resource):
             jsonify({"error": "Username or email exists"}), 401
         )
         return response
-        # confirm_password = request.get_json()["confirm_password"]
-
-        # existing_user = User.query.filter_by(email=email).first()
-        # if existing_user:
-        #     return {"error": "Email already exists in the database"}
-        
-        # if password != confirm_password:
-        #     return {"error": "Passwords do not match"}
-
-        # new_user = User(username=username, email=email)
-        # new_user.password_hash = password  
-
-        
-        # db.session.add(new_user)
-        # db.session.commit()
-        # return{"message": "User created successfully", "status":201}
 
 api.add_resource(Signup, "/signup")
 
@@ -111,10 +109,10 @@ class Login(Resource):
         email = request.get_json()['email']
         password = request.get_json().get('password')
 
-        user = User.query.filter(User.email == email).first()  
+        user = User.query.filter(User.email == email).first()
 
         if user and user.authenticate(password):
-          session['person_id'] = user.id
+          session['user_id'] = user.id
           user_dict = user.to_dict()
 
           response_body = make_response(jsonify(user_dict), 200)
@@ -129,8 +127,8 @@ api.add_resource(Login,'/login',endpoint='login')
 
 class CheckSession(Resource):
     def get(self):
-        if session['person_id']:
-            user_signed_in = User.query.filter_by(id= session['person_id']).first()
+        if session['user_id']:
+            user_signed_in = User.query.filter_by(id= session['user_id']).first()
             response = make_response(
                 jsonify(user_signed_in.to_dict()),
                 200
@@ -148,11 +146,12 @@ api.add_resource(CheckSession,'/session',endpoint='session' )
 
 class Logout(Resource):
     def delete(self):
-        if session.get('person_id'):
-            session['person_id']=None
-            return {"message": "User logged out successfully"}
+        if session.get('user_id'):
+            session['user_id']=None
+            session.pop('user_id')
+            return {"message": "User logged out successfully"}, 200
         else:
-            return {"error":"User must be logged in to logout"}
+            return {"error":"User not logged in!"}, 401
 
 api.add_resource(Logout, '/logout', endpoint='logout')
      
